@@ -73,7 +73,6 @@ async def login_status(request: Request):
     # Example GCS URI: gs://bucket_name/path/to/state.json
     # You may want to hardcode or configure the bucket/prefix as needed
     BUCKET_NAME = "insta-state"  # Set to your actual bucket
-    PREFIX = "nate/"  # Set to "nate/" if you want to restrict to that folder, else leave as "" for root
     EXT = ".json"                      # Only look for .json state files
     now = datetime.datetime.now(datetime.timezone.utc)
     ten_minutes_ago = now - datetime.timedelta(minutes=10)
@@ -81,15 +80,15 @@ async def login_status(request: Request):
     client = storage.Client()
     bucket = client.bucket(BUCKET_NAME)
     # List blobs with the prefix
-    blobs = list(bucket.list_blobs(prefix=PREFIX))
-    print(f"[login-status] Listing all blobs with prefix '{PREFIX}':")
+    blobs = list(bucket.list_blobs())
+    print(f"[login-status] Listing all blobs:")
     for b in blobs:
         print(f"  - {b.name} (updated: {b.updated}, endswith .json: {b.name.endswith(EXT)})")
     print(f"[login-status] Checking which blobs are newer than {ten_minutes_ago.isoformat()}: ")
     for b in blobs:
         if b.name.endswith(EXT):
             print(f"  - {b.name}: updated {b.updated}, is_newer: {b.updated and b.updated > ten_minutes_ago}")
-    print(f"[login-status] Found {len(blobs)} blobs with prefix '{PREFIX}' in bucket '{BUCKET_NAME}'")
+    print(f"[login-status] Found {len(blobs)} blobs in bucket '{BUCKET_NAME}'")
     # Filter for .json files newer than 10 minutes
     recent_blobs = [b for b in blobs if b.name.endswith(EXT) and b.updated and b.updated > ten_minutes_ago]
     print(f"[login-status] Found {len(recent_blobs)} recent .json blobs newer than 10 minutes")
