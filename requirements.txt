@@ -1,10 +1,8 @@
 fastapi
 uvicorn[standard]
-playwright==1.44.0
-openai
 pydantic
-python-dotenv
 google-cloud-run
 google-cloud-logging
 httpx
 google-cloud-storage
+

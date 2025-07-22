@@ -1,46 +1,22 @@
 # app/scraper.py
 """
-Two-step helper for local + remote workflow
-------------------------------------------
-1) interactive_login(...)  → let the user log in to Instagram once and
-   save the Playwright storage state to disk.
-2) run_remote_scrape(...)  → read that state file, b64-encode it, POST it
-   to your Railway FastAPI service, and return the results.
+Helper utilities for triggering the remote scraper.
+
+Only :func:`run_remote_scrape` is exported.  The login step is now
+handled by the desktop application, so the previous ``interactive_login``
+helper has been removed.
 """
 
-import base64, json, os, asyncio, tempfile
+import asyncio
+import json
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict
 
 import httpx
-from playwright.async_api import async_playwright, Browser, Page
 
 
 ################################################################################
-# 1.  Log in manually & save cookies
-################################################################################
-
-async def interactive_login(
-    state_path: Path = Path("state.json"),
-) -> None:
-    """
-    Launches a *visible* Instagram window.
-    You log in, then press Enter in the terminal → cookies are persisted.
-    """
-    async with async_playwright() as pw:
-        browser: Browser = await pw.chromium.launch(headless=False)
-        page: Page = await browser.new_page()
-        await page.goto("https://www.instagram.com/")
-
-        input("👉  Log in inside the window, then press <Enter> here to save state... ")
-
-        await page.context.storage_state(path=state_path)
-        await browser.close()
-        print(f"✅  Saved state to {state_path.absolute()}")
-
-
-################################################################################
-# 2.  Send that state to the Railway scraper
+# 1.  Invoke the remote scraper
 ################################################################################
 
 async def run_remote_scrape(
@@ -81,41 +57,34 @@ async def run_remote_scrape(
 
 
 ################################################################################
-# 3.  Convenience CLI:  python -m app.scraper login / scrape
+# 2.  Convenience CLI:  ``python -m app.scraper``
 ################################################################################
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="IG login & remote scrape helper")
-    sub = parser.add_subparsers(dest="cmd", required=True)
-
-    #  interactive_login
-    p_login = sub.add_parser("login", help="Open IG and save cookies")
-    p_login.add_argument("--state", default="state.json", help="Where to save Playwright state")
-
-    #  run_remote_scrape
-    p_scrape = sub.add_parser("scrape", help="Call Railway /scrape with saved state")
-    p_scrape.add_argument("target", help="Instagram account to analyse (followers are scanned)")
-    p_scrape.add_argument("--state",      default="state.json", help="state file from login step")
-    p_scrape.add_argument("--yes",        type=int, default=10, help="How many yes-profiles to collect")
-    p_scrape.add_argument("--batch-size", type=int, default=30, help="Follower-bios per batch")
-    p_scrape.add_argument("--url",        default="https://scrape-orchestrator-mhnsdh4esa-ew.a.run.app/run-scrape",
-                          help="Full URL of your Google Cloud Run /scrape endpoint")
+    parser = argparse.ArgumentParser(description="Trigger the remote scrape job")
+    parser.add_argument("target", help="Instagram account to analyse (followers are scanned)")
+    parser.add_argument("--state", required=True, help="gs:// path to saved Playwright cookies")
+    parser.add_argument("--yes", type=int, default=10, help="How many yes-profiles to collect")
+    parser.add_argument("--batch-size", type=int, default=30, help="Follower-bios per batch")
+    parser.add_argument(
+        "--url",
+        default="https://scrape-orchestrator-mhnsdh4esa-ew.a.run.app/run-scrape",
+        help="Full URL of your Google Cloud Run /scrape endpoint",
+    )
 
     args = parser.parse_args()
 
-    if args.cmd == "login":
-        asyncio.run(interactive_login(Path(args.state)))
-    else:  # scrape
-        results = asyncio.run(
-            run_remote_scrape(
-                state_path = Path(args.state),
-                target     = args.target,
-                api_url    = args.url,
-                target_yes = args.yes,
-                batch_size = args.batch_size,
-            )
+    results = asyncio.run(
+        run_remote_scrape(
+            state_gcs_uri=args.state,
+            target=args.target,
+            api_url=args.url,
+            target_yes=args.yes,
+            batch_size=args.batch_size,
         )
-        # pretty-print
-        print(json.dumps(results, indent=2))
+    )
+
+    # pretty-print
+    print(json.dumps(results, indent=2))
