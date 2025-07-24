@@ -60,13 +60,23 @@ class RemoteResp(BaseModel):
 async def register_state(req: RegisterStateRequest, request: Request):
     """Persist the GCS URI produced by the desktop login flow."""
     request.app.state.state_path = req.gcs_uri
+    request.app.state.state_path_timestamp = datetime.datetime.now(datetime.timezone.utc)
     return {"ok": True}
 
 @app.get("/login-status")
 async def login_status(request: Request):
     # If state_path is already set, return finished
     if hasattr(request.app.state, "state_path"):
-        print(f"[login-status] state_path found in app state: {getattr(request.app.state, 'state_path')}")
+        gcs_uri = getattr(request.app.state, "state_path")
+        state_timestamp = getattr(request.app.state, "state_path_timestamp", None)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if state_timestamp and (now - state_timestamp).total_seconds() > 600:
+            print(f"[login-status] state_path found but is older than 10 minutes: {gcs_uri} (timestamp: {state_timestamp})")
+            delattr(request.app.state, "state_path")
+            if hasattr(request.app.state, "state_path_timestamp"):
+                delattr(request.app.state, "state_path_timestamp")
+            return {"status": "none", "ok": False}
+        print(f"[login-status] state_path found in app state: {gcs_uri}")
         return {"status": "finished", "ok": True}
 
     print("[login-status] state_path not found, searching GCS for recent state file...")
@@ -98,6 +108,7 @@ async def login_status(request: Request):
         gcs_uri = f"gs://{BUCKET_NAME}/{blob.name}"
         print(f"[login-status] Using most recent blob: {gcs_uri} (updated: {blob.updated})")
         request.app.state.state_path = gcs_uri
+        request.app.state.state_path_timestamp = blob.updated
         return {"status": "finished", "ok": True}
     print("[login-status] No recent state file found in GCS, returning none")
     return {"status": "none", "ok": False}
