@@ -48,6 +48,7 @@ class RemoteReq(BaseModel):
     target     : str = Field(..., example="utmartin")
     target_yes : int = 12
     batch_size : int = 30
+    num_bio_pages : int = 3
     api_url    : str = (
         "https://scrape-orchestrator-mhnsdh4esa-ew.a.run.app/run-scrape"
     )
@@ -131,6 +132,7 @@ async def remote_scrape(body: RemoteReq, request: Request):
             api_url       = body.api_url,
             target_yes    = body.target_yes,
             batch_size    = body.batch_size,
+            num_bio_pages = body.num_bio_pages
         )
 
         # -------------------- response handling --------------------

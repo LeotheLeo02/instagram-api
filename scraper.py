@@ -26,6 +26,7 @@ async def run_remote_scrape(
     api_url: str = "https://scrape-orchestrator-mhnsdh4esa-ew.a.run.app/run-scrape",
     target_yes: int = 12,
     batch_size: int = 30,
+    num_bio_pages: int = 3
 ) -> Dict:
     """
     Invoke the /run-scrape endpoint, passing a gs:// cookie-state URI.
@@ -37,7 +38,8 @@ async def run_remote_scrape(
         "target": target,
         "target_yes": target_yes,
         "batch_size": batch_size,
-        "state_gcs_uri": state_gcs_uri,   # ← only field we send now
+        "state_gcs_uri": state_gcs_uri,
+        "num_bio_pages": num_bio_pages
     }
 
     timeout = httpx.Timeout(900.0, connect=60.0, read=900.0,
@@ -68,6 +70,7 @@ if __name__ == "__main__":
     parser.add_argument("--state", required=True, help="gs:// path to saved Playwright cookies")
     parser.add_argument("--yes", type=int, default=10, help="How many yes-profiles to collect")
     parser.add_argument("--batch-size", type=int, default=30, help="Follower-bios per batch")
+    parser.add_argument("--num-bio-pages", type=int, default=3, help="Number of bio pages to use")
     parser.add_argument(
         "--url",
         default="https://scrape-orchestrator-mhnsdh4esa-ew.a.run.app/run-scrape",
@@ -83,6 +86,7 @@ if __name__ == "__main__":
             api_url=args.url,
             target_yes=args.yes,
             batch_size=args.batch_size,
+            num_bio_pages=args.num_bio_pages
         )
     )
 
