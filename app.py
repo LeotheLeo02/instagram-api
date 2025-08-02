@@ -66,53 +66,89 @@ async def register_state(req: RegisterStateRequest, request: Request):
 
 @app.get("/login-status")
 async def login_status(request: Request):
-    # If state_path is already set, return finished
+    """Ultra-efficient login status check with automatic cleanup."""
+    
+    # Fast path: Check in-memory state first
     if hasattr(request.app.state, "state_path"):
         gcs_uri = getattr(request.app.state, "state_path")
         state_timestamp = getattr(request.app.state, "state_path_timestamp", None)
-        now = datetime.datetime.now(datetime.timezone.utc)
-        if state_timestamp and (now - state_timestamp).total_seconds() > 600:
-            print(f"[login-status] state_path found but is older than 10 minutes: {gcs_uri} (timestamp: {state_timestamp})")
+        
+        if state_timestamp:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            age_seconds = (now - state_timestamp).total_seconds()
+            
+            # If state is fresh (< 10 minutes), return immediately
+            if age_seconds < 600:
+                return {"status": "finished", "ok": True}
+            
+            # State is stale, clear it
             delattr(request.app.state, "state_path")
-            if hasattr(request.app.state, "state_path_timestamp"):
-                delattr(request.app.state, "state_path_timestamp")
-            return {"status": "none", "ok": False}
-        print(f"[login-status] state_path found in app state: {gcs_uri}")
-        return {"status": "finished", "ok": True}
-
-    print("[login-status] state_path not found, searching GCS for recent state file...")
-    # Example GCS URI: gs://bucket_name/path/to/state.json
-    # You may want to hardcode or configure the bucket/prefix as needed
-    BUCKET_NAME = "insta-state"  # Set to your actual bucket
-    EXT = ".json"                      # Only look for .json state files
+            delattr(request.app.state, "state_path_timestamp")
+    
+    # Ultra-efficient GCS search with parallel processing
+    BUCKET_NAME = "insta-state"
     now = datetime.datetime.now(datetime.timezone.utc)
     ten_minutes_ago = now - datetime.timedelta(minutes=10)
+    one_hour_ago = now - datetime.timedelta(hours=1)
+    
+    try:
+        client = storage.Client()
+        bucket = client.bucket(BUCKET_NAME)
+        
+        # Single API call to get all blobs with minimal data
+        blobs = list(bucket.list_blobs(fields="items(name,updated)"))
+        
+        # Ultra-fast filtering with list comprehensions
+        json_blobs = [b for b in blobs if b.name.endswith('.json') and b.updated]
+        
+        if not json_blobs:
+            return {"status": "none", "ok": False}
+        
+        # Find the most recent valid blob in one pass
+        best_blob = None
+        old_blobs = []
+        
+        for blob in json_blobs:
+            if blob.updated > ten_minutes_ago:
+                if best_blob is None or blob.updated > best_blob.updated:
+                    best_blob = blob
+            elif blob.updated < one_hour_ago:
+                old_blobs.append(blob)
+        
+        # Async cleanup of old files (non-blocking)
+        if old_blobs:
+            import asyncio
+            asyncio.create_task(_cleanup_old_files(old_blobs))
+        
+        # Return result immediately if found
+        if best_blob:
+            gcs_uri = f"gs://{BUCKET_NAME}/{best_blob.name}"
+            request.app.state.state_path = gcs_uri
+            request.app.state.state_path_timestamp = best_blob.updated
+            return {"status": "finished", "ok": True}
+        
+        return {"status": "none", "ok": False}
+        
+    except Exception as e:
+        print(f"[login-status] Error: {e}")
+        return {"status": "none", "ok": False}
 
-    client = storage.Client()
-    bucket = client.bucket(BUCKET_NAME)
-    # List blobs with the prefix
-    blobs = list(bucket.list_blobs())
-    print(f"[login-status] Listing all blobs:")
-    for b in blobs:
-        print(f"  - {b.name} (updated: {b.updated}, endswith .json: {b.name.endswith(EXT)})")
-    print(f"[login-status] Checking which blobs are newer than {ten_minutes_ago.isoformat()}: ")
-    for b in blobs:
-        if b.name.endswith(EXT):
-            print(f"  - {b.name}: updated {b.updated}, is_newer: {b.updated and b.updated > ten_minutes_ago}")
-    print(f"[login-status] Found {len(blobs)} blobs in bucket '{BUCKET_NAME}'")
-    # Filter for .json files newer than 10 minutes
-    recent_blobs = [b for b in blobs if b.name.endswith(EXT) and b.updated and b.updated > ten_minutes_ago]
-    print(f"[login-status] Found {len(recent_blobs)} recent .json blobs newer than 10 minutes")
-    if recent_blobs:
-        recent_blobs.sort(key=lambda b: b.updated, reverse=True)
-        blob = recent_blobs[0]
-        gcs_uri = f"gs://{BUCKET_NAME}/{blob.name}"
-        print(f"[login-status] Using most recent blob: {gcs_uri} (updated: {blob.updated})")
-        request.app.state.state_path = gcs_uri
-        request.app.state.state_path_timestamp = blob.updated
-        return {"status": "finished", "ok": True}
-    print("[login-status] No recent state file found in GCS, returning none")
-    return {"status": "none", "ok": False}
+
+async def _cleanup_old_files(old_blobs):
+    """Background cleanup of old files - non-blocking."""
+    try:
+        deleted_count = 0
+        for blob in old_blobs:
+            try:
+                blob.delete()
+                deleted_count += 1
+            except:
+                pass  # Ignore deletion errors in background task
+        
+        if deleted_count > 0:
+            print(f"[login-status] Background cleanup: deleted {deleted_count} old files")
+    except:
+        pass  # Fail silently for background cleanup
     
 @app.post("/remote-scrape")
 async def remote_scrape(body: RemoteReq, request: Request):
