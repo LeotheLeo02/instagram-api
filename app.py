@@ -197,18 +197,9 @@ async def remote_scrape(body: RemoteReq, request: Request):
 JOB_NAME = "scrape-job"             # << change if your job has another name
 
 @app.get("/scrape-status")
-async def scrape_status(
-    operation: str = Query(
-        ...,
-        description="Cloud Run LRO path  e.g. "
-        "projects/<p>/locations/<r>/operations/<uuid>",
-    )
-):
-    op_path = unquote(operation)    # undo %2F from the client
+async def scrape_status(operation: str = Query(...)):
+    op_path = unquote(operation)
 
-    # ──────────────────────────────
-    # 1️⃣  Poll the long-running OP
-    # ──────────────────────────────
     if "/operations/" not in op_path:
         raise HTTPException(400, "Expecting an /operations/ path")
 
@@ -225,9 +216,7 @@ async def scrape_status(
         return {"status": "failed", "message": op.error.message}
 
     try:
-        # ──────────────────────────────
-        # 2️⃣  Get execution path from operation response
-        # ──────────────────────────────
+        # Get execution path from operation response
         exec_pb = execution_plus.Execution()._pb
         op.response.Unpack(exec_pb)
         exec_path = exec_pb.name
@@ -236,11 +225,9 @@ async def scrape_status(
         exec_client = run_v2.ExecutionsClient()
         execution = exec_client.get_execution(name=exec_path)
 
-        # ──────────────────────────────
-        # 3️⃣  Pull your JSON array from Cloud Logging
-        # ──────────────────────────────
+        # Pull JSON array from Cloud Logging
         project_id = execution.name.split("/")[1]
-        exec_short = execution.name.split("/")[-1]           # scrape-job-<uuid>
+        exec_short = execution.name.split("/")[-1]
 
         log_filter = (
             'resource.type="cloud_run_job" '
@@ -257,7 +244,6 @@ async def scrape_status(
                 "page_size": 1000,
             }
         )
-        print("Entries: ", entries)
 
         buffer, collecting = [], False
         results = None
@@ -268,12 +254,12 @@ async def scrape_status(
                 or getattr(entry, "json_payload", {}).get("message", "")
             )
 
-            # start collecting when we hit the opening "["
+            # Start collecting when we hit the opening "["
             if "[" in payload and not collecting:
                 collecting = True
             if collecting:
                 buffer.append(payload.rstrip("\n"))
-            if collecting and "]" in payload:     # reached the closing "]"
+            if collecting and "]" in payload:  # Reached the closing "]"
                 try:
                     results = json.loads("\n".join(buffer))
                 except json.JSONDecodeError:
@@ -281,9 +267,7 @@ async def scrape_status(
                 break
 
         if results is None:
-            raise HTTPException(
-                500, "Job completed but results not found in logs"
-            )
+            raise HTTPException(500, "Job completed but results not found in logs")
 
     except Exception as e:
         print("🔴 scrape_status failed\n", traceback.format_exc())
