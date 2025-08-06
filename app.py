@@ -14,6 +14,7 @@ from google.cloud import run_v2
 from google.cloud import logging_v2
 from google.cloud import storage
 import datetime
+import os
 import logging
 
 from pydantic     import BaseModel, Field
@@ -194,10 +195,77 @@ async def remote_scrape(body: RemoteReq, request: Request):
         raise HTTPException(500, str(e))
 
 
+
+# ────────────────────────────────────────────────────────────────────────────
+# GCS-based status lookup (new artifact scheme)
+# ────────────────────────────────────────────────────────────────────────────
+
+def _gcs_status_lookup(target: str, exec_id: str):
+    """Return status by checking GCS artifacts written by the scraper.
+
+    Layout:
+      scrapes/<target>/<exec_id>/results.json
+      scrapes/<target>/<exec_id>/meta.json
+      scrapes/<target>/<exec_id>/DONE  (uploaded last)
+    """
+    bucket_name = os.environ.get("SCREENSHOT_BUCKET") or os.environ.get("RESULTS_BUCKET")
+    if not bucket_name:
+        raise HTTPException(500, "Results bucket not configured: set SCREENSHOT_BUCKET or RESULTS_BUCKET")
+
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    prefix = f"scrapes/{target}/{exec_id}/"
+
+    # Completion signal
+    done_blob = bucket.blob(prefix + "DONE")
+    if not done_blob.exists(client):
+        return {"status": "running"}
+
+    # Results
+    results_blob = bucket.blob(prefix + "results.json")
+    if not results_blob.exists(client):
+        return {"status": "failed", "message": "DONE present but results.json missing"}
+
+    try:
+        results_text = results_blob.download_as_text()
+        results = json.loads(results_text)
+    except Exception as e:
+        raise HTTPException(500, f"Failed to read results.json: {e}")
+
+    return {"status": "completed", "results": results}
+
 JOB_NAME = "scrape-job"             # << change if your job has another name
 
+
 @app.get("/scrape-status")
-async def scrape_status(operation: str = Query(...)):
+async def scrape_status(
+    target: str = Query(...),
+    exec_id: str = Query(...),
+):
+    """Check scrape status using GCS artifacts.
+
+    Args:
+        target: Target Instagram username
+        exec_id: Operation ID (like op_<epoch>)
+
+    Example:
+        /scrape-status?target=utmartin&exec_id=op_1722980000
+    """
+    return _gcs_status_lookup(target=target, exec_id=exec_id)
+
+
+@app.get("/legacy-scrape-status")
+async def legacy_scrape_status(
+    operation: str = Query(...),
+):
+    """Legacy endpoint for checking scrape status using Cloud Run Operations.
+
+    Args:
+        operation: Cloud Run Operations path
+
+    Example:
+        /legacy-scrape-status?operation=/operations/abc-123
+    """
     op_path = unquote(operation)
 
     if "/operations/" not in op_path:
@@ -225,14 +293,14 @@ async def scrape_status(operation: str = Query(...)):
         exec_client = run_v2.ExecutionsClient()
         execution = exec_client.get_execution(name=exec_path)
 
-        # Pull JSON array from Cloud Logging
+        # Pull JSON array from Cloud Logging (legacy)
         project_id = execution.name.split("/")[1]
         exec_short = execution.name.split("/")[-1]
 
+        # Relaxed filter (no severity constraint)
         log_filter = (
             'resource.type="cloud_run_job" '
-            f'labels."run.googleapis.com/execution_name"="{exec_short}" '
-            'severity=DEFAULT'
+            f'labels."run.googleapis.com/execution_name"="{exec_short}"'
         )
 
         log_cli = LoggingServiceV2Client()
@@ -263,14 +331,17 @@ async def scrape_status(operation: str = Query(...)):
                 try:
                     results = json.loads("\n".join(buffer))
                 except json.JSONDecodeError:
-                    pass
+                    # reset and keep scanning
+                    collecting = False
+                    buffer = []
+                    continue
                 break
 
         if results is None:
             raise HTTPException(500, "Job completed but results not found in logs")
 
-    except Exception as e:
-        print("🔴 scrape_status failed\n", traceback.format_exc())
-        raise HTTPException(500, f"Error processing execution results: {str(e)}")
+    except Exception:
+        print("🔴 scrape_status (legacy logs) failed\n", traceback.format_exc())
+        raise HTTPException(500, "Error processing execution results from logs")
 
     return {"status": "completed", "results": results}
