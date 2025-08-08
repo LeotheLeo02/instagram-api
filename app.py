@@ -67,69 +67,83 @@ async def register_state(req: RegisterStateRequest, request: Request):
 
 @app.get("/login-status")
 async def login_status(request: Request):
-    """Ultra-efficient login status check with automatic cleanup."""
-    
+    """Ultra-efficient login status check with automatic cleanup.
+
+    Cookie freshness is controlled via env variables:
+      - LOGIN_STATE_FRESH_SECONDS (default: 86400 seconds = 24h)
+      - LOGIN_STATE_CLEANUP_SECONDS (default: 2592000 seconds = 30d)
+    """
+
+    def _get_int_env(name: str, default: int) -> int:
+        try:
+            return int(os.getenv(name, str(default)))
+        except Exception:
+            return default
+
+    FRESH_SECONDS = _get_int_env("LOGIN_STATE_FRESH_SECONDS", 86400)  # 24h
+    CLEANUP_SECONDS = _get_int_env("LOGIN_STATE_CLEANUP_SECONDS", 2592000)  # 30d
+
     # Fast path: Check in-memory state first
     if hasattr(request.app.state, "state_path"):
         gcs_uri = getattr(request.app.state, "state_path")
         state_timestamp = getattr(request.app.state, "state_path_timestamp", None)
-        
+
         if state_timestamp:
             now = datetime.datetime.now(datetime.timezone.utc)
             age_seconds = (now - state_timestamp).total_seconds()
-            
-            # If state is fresh (< 10 minutes), return immediately
-            if age_seconds < 600:
+
+            # If state is fresh (< FRESH_SECONDS), return immediately
+            if age_seconds < FRESH_SECONDS:
                 return {"status": "finished", "ok": True}
-            
+
             # State is stale, clear it
             delattr(request.app.state, "state_path")
             delattr(request.app.state, "state_path_timestamp")
-    
+
     # Ultra-efficient GCS search with parallel processing
     BUCKET_NAME = "insta-state"
     now = datetime.datetime.now(datetime.timezone.utc)
-    ten_minutes_ago = now - datetime.timedelta(minutes=10)
-    one_hour_ago = now - datetime.timedelta(hours=1)
-    
+    fresh_threshold = now - datetime.timedelta(seconds=FRESH_SECONDS)
+    cleanup_threshold = now - datetime.timedelta(seconds=CLEANUP_SECONDS)
+
     try:
         client = storage.Client()
         bucket = client.bucket(BUCKET_NAME)
-        
+
         # Single API call to get all blobs with minimal data
         blobs = list(bucket.list_blobs(fields="items(name,updated)"))
-        
+
         # Ultra-fast filtering with list comprehensions
         json_blobs = [b for b in blobs if b.name.endswith('.json') and b.updated]
-        
+
         if not json_blobs:
             return {"status": "none", "ok": False}
-        
+
         # Find the most recent valid blob in one pass
         best_blob = None
         old_blobs = []
-        
+
         for blob in json_blobs:
-            if blob.updated > ten_minutes_ago:
+            if blob.updated > fresh_threshold:
                 if best_blob is None or blob.updated > best_blob.updated:
                     best_blob = blob
-            elif blob.updated < one_hour_ago:
+            elif blob.updated < cleanup_threshold:
                 old_blobs.append(blob)
-        
+
         # Async cleanup of old files (non-blocking)
         if old_blobs:
             import asyncio
             asyncio.create_task(_cleanup_old_files(old_blobs))
-        
+
         # Return result immediately if found
         if best_blob:
             gcs_uri = f"gs://{BUCKET_NAME}/{best_blob.name}"
             request.app.state.state_path = gcs_uri
             request.app.state.state_path_timestamp = best_blob.updated
             return {"status": "finished", "ok": True}
-        
+
         return {"status": "none", "ok": False}
-        
+
     except Exception as e:
         print(f"[login-status] Error: {e}")
         return {"status": "none", "ok": False}
