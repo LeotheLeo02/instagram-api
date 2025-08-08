@@ -177,13 +177,39 @@ async def remote_scrape(body: RemoteReq, request: Request):
         raise HTTPException(400, "No cookie gs:// URI registered – call /register-state first")
 
     try:
+        # Generate epoch_id if not provided
+        epoch_id = f"op_{int(datetime.datetime.now(datetime.timezone.utc).timestamp())}"
+
+        # Pre-create START artifacts so polling never 404s
+        try:
+            bucket_name = os.environ.get("SCREENSHOT_BUCKET") or os.environ.get("RESULTS_BUCKET")
+            if not bucket_name:
+                raise RuntimeError("Results bucket not configured")
+            client = storage.Client()
+            bucket = client.bucket(bucket_name)
+            prefix = f"scrapes/{body.target}/{epoch_id}/"
+            start_blob = bucket.blob(prefix + "START")
+            start_blob.upload_from_string(json.dumps({"ok": True, "ts": int(datetime.datetime.now(datetime.timezone.utc).timestamp())}), content_type="application/json")
+            meta_blob = bucket.blob(prefix + "meta.json")
+            running_meta = {
+                "status": "running",
+                "target": body.target,
+                "target_yes": body.target_yes,
+                "operation_id": epoch_id,
+            }
+            meta_blob.upload_from_string(json.dumps(running_meta), content_type="application/json")
+        except Exception as _e:
+            # Non-fatal; continue
+            pass
+
         resp = await run_remote_scrape(
             state_gcs_uri = gs_uri,
             target        = body.target,
             api_url       = body.api_url,
             target_yes    = body.target_yes,
             batch_size    = body.batch_size,
-            num_bio_pages = body.num_bio_pages
+            num_bio_pages = body.num_bio_pages,
+            exec_id       = epoch_id,
         )
 
         # -------------------- response handling --------------------
@@ -193,7 +219,7 @@ async def remote_scrape(body: RemoteReq, request: Request):
                 raise HTTPException(500, "operation id missing in response")
             return JSONResponse(
                 status_code=status.HTTP_202_ACCEPTED,
-                content={"status": "queued", "operation": op_id},
+                content={"status": "queued", "operation": op_id, "exec_id": epoch_id},
             )
 
         # synchronous completion

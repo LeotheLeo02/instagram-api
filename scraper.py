@@ -26,7 +26,8 @@ async def run_remote_scrape(
     api_url: str = "https://scrape-orchestrator-mhnsdh4esa-ew.a.run.app/run-scrape",
     target_yes: int = 12,
     batch_size: int = 30,
-    num_bio_pages: int = 3
+    num_bio_pages: int = 3,
+    exec_id: str | None = None,
 ) -> Dict:
     """
     Invoke the /run-scrape endpoint, passing a gs:// cookie-state URI.
@@ -39,7 +40,8 @@ async def run_remote_scrape(
         "target_yes": target_yes,
         "batch_size": batch_size,
         "state_gcs_uri": state_gcs_uri,
-        "num_bio_pages": num_bio_pages
+        "num_bio_pages": num_bio_pages,
+        "exec_id": exec_id
     }
 
     timeout = httpx.Timeout(900.0, connect=60.0, read=900.0,
