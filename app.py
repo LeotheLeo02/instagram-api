@@ -214,13 +214,24 @@ async def remote_scrape(body: RemoteReq, request: Request):
 # GCS-based status lookup (new artifact scheme)
 # ────────────────────────────────────────────────────────────────────────────
 
+def _get_int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+
 def _gcs_status_lookup(target: str, exec_id: str):
-    """Return status by checking GCS artifacts written by the scraper.
+    """Return status by checking GCS artifacts written to GCS.
 
     Layout:
       scrapes/<target>/<exec_id>/results.json
       scrapes/<target>/<exec_id>/meta.json
       scrapes/<target>/<exec_id>/DONE  (uploaded last)
+
+    Adds slack handling when waiting for initial folder/DONE to appear.
+    When DONE exists but results.json isn't readable yet, we retry briefly
+    before returning running.
     """
     bucket_name = os.environ.get("SCREENSHOT_BUCKET") or os.environ.get("RESULTS_BUCKET")
     if not bucket_name:
@@ -228,23 +239,53 @@ def _gcs_status_lookup(target: str, exec_id: str):
 
     client = storage.Client()
     bucket = client.bucket(bucket_name)
+
+    # Slack window/polling
+    slack_seconds = _get_int_env("SCRAPE_STATUS_SLACK_SECONDS", 120)
+    read_retries = _get_int_env("SCRAPE_STATUS_READ_RETRIES", 3)
+    read_retry_delay_ms = _get_int_env("SCRAPE_STATUS_READ_RETRY_DELAY_MS", 300)
+
     prefix = f"scrapes/{target}/{exec_id}/"
 
     # Completion signal
     done_blob = bucket.blob(prefix + "DONE")
     if not done_blob.exists(client):
-        return {"status": "running"}
+        # Wait up to slack_seconds for the folder/DONE to appear before failing
+        try:
+            import time as _time
+            deadline = _time.monotonic() + max(0, slack_seconds)
+            while _time.monotonic() < deadline:
+                _time.sleep(max(0.05, read_retry_delay_ms / 1000.0))
+                if done_blob.exists(client):
+                    break
+        except Exception:
+            pass
+        if not done_blob.exists(client):
+            raise HTTPException(404, f"Scrape artifacts not found for target={target}, exec_id={exec_id}")
 
-    # Results
+    # Results with small retry to handle GCS write propagation
     results_blob = bucket.blob(prefix + "results.json")
     if not results_blob.exists(client):
-        return {"status": "failed", "message": "DONE present but results.json missing"}
+        # Not yet visible; report running to allow slack
+        return {"status": "running"}
 
-    try:
-        results_text = results_blob.download_as_text()
-        results = json.loads(results_text)
-    except Exception as e:
-        raise HTTPException(500, f"Failed to read results.json: {e}")
+    last_exc = None
+    for _ in range(max(1, read_retries)):
+        try:
+            results_text = results_blob.download_as_text()
+            results = json.loads(results_text)
+            break
+        except Exception as e:
+            last_exc = e
+            # brief sleep before retry
+            try:
+                import time as _time
+                _time.sleep(read_retry_delay_ms / 1000.0)
+            except Exception:
+                pass
+    else:
+        # All retries failed; treat as running to avoid transient 500s
+        return {"status": "running"}
 
     return {"status": "completed", "results": results}
 
