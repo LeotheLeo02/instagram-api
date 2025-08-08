@@ -261,6 +261,7 @@ def _gcs_status_lookup(target: str, exec_id: str):
         except Exception:
             pass
         if not done_blob.exists(client):
+            print(f"DBG scrape artifacts not found for target={target}, exec_id={exec_id}")
             raise HTTPException(404, f"Scrape artifacts not found for target={target}, exec_id={exec_id}")
 
     # Results with small retry to handle GCS write propagation
