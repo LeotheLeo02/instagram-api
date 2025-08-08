@@ -345,3 +345,39 @@ async def legacy_scrape_status(
         raise HTTPException(500, "Error processing execution results from logs")
 
     return {"status": "completed", "results": results}
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Deletion of GCS artifacts after client persists locally
+# ────────────────────────────────────────────────────────────────────────────
+@app.delete("/scrape-artifacts")
+async def delete_scrape_artifacts(
+    target: str = Query(...),
+    exec_id: str = Query(...),
+):
+    """Delete all artifacts under scrapes/<target>/<exec_id>/ in the results bucket.
+
+    This is intended to be called by the desktop app once results have been
+    saved locally, to avoid leaving artifacts in GCS.
+    """
+    bucket_name = os.environ.get("SCREENSHOT_BUCKET") or os.environ.get("RESULTS_BUCKET")
+    if not bucket_name:
+        raise HTTPException(500, "Results bucket not configured: set SCREENSHOT_BUCKET or RESULTS_BUCKET")
+
+    try:
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        prefix = f"scrapes/{target}/{exec_id}/"
+
+        blobs = list(bucket.list_blobs(prefix=prefix))
+        deleted = 0
+        for blob in blobs:
+            try:
+                blob.delete()
+                deleted += 1
+            except Exception as e:
+                logging.warning(f"Failed to delete blob {blob.name}: {e}")
+
+        return {"ok": True, "deleted": deleted, "prefix": prefix}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to delete artifacts: {e}")
