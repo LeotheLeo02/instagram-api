@@ -253,11 +253,14 @@ def _gcs_status_lookup(target: str, exec_id: str):
     Layout:
       scrapes/<target>/<exec_id>/results.json
       scrapes/<target>/<exec_id>/meta.json
+      scrapes/<target>/<exec_id>/START (uploaded first)
       scrapes/<target>/<exec_id>/DONE  (uploaded last)
 
-    Adds slack handling when waiting for initial folder/DONE to appear.
-    When DONE exists but results.json isn't readable yet, we retry briefly
-    before returning running.
+    Behavior:
+      - Wait (up to slack) for START to appear; if still missing, 404
+      - If DONE not present yet -> status: running
+      - If DONE present but results.json not yet readable -> status: running
+      - If DONE present and results.json readable -> status: completed
     """
     bucket_name = os.environ.get("SCREENSHOT_BUCKET") or os.environ.get("RESULTS_BUCKET")
     if not bucket_name:
@@ -273,22 +276,26 @@ def _gcs_status_lookup(target: str, exec_id: str):
 
     prefix = f"scrapes/{target}/{exec_id}/"
 
-    # Completion signal
-    done_blob = bucket.blob(prefix + "DONE")
-    if not done_blob.exists(client):
-        # Wait up to slack_seconds for the folder/DONE to appear before failing
+    # 1) Wait for START to appear (folder existence)
+    start_blob = bucket.blob(prefix + "START")
+    if not start_blob.exists(client):
         try:
             import time as _time
             deadline = _time.monotonic() + max(0, slack_seconds)
             while _time.monotonic() < deadline:
                 _time.sleep(max(0.05, read_retry_delay_ms / 1000.0))
-                if done_blob.exists(client):
+                if start_blob.exists(client):
                     break
         except Exception:
             pass
-        if not done_blob.exists(client):
-            print(f"DBG scrape artifacts not found for target={target}, exec_id={exec_id}")
+        if not start_blob.exists(client):
+            print(f"DBG START not found for target={target}, exec_id={exec_id}")
             raise HTTPException(404, f"Scrape artifacts not found for target={target}, exec_id={exec_id}")
+
+    # 2) If DONE not yet present → running
+    done_blob = bucket.blob(prefix + "DONE")
+    if not done_blob.exists(client):
+        return {"status": "running"}
 
     # Results with small retry to handle GCS write propagation
     results_blob = bucket.blob(prefix + "results.json")
