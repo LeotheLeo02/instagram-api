@@ -459,14 +459,23 @@ async def delete_scrape_artifacts(
         prefix = f"scrapes/{target}/{exec_id}/"
 
         blobs = list(bucket.list_blobs(prefix=prefix))
+        if not blobs:
+            raise HTTPException(404, f"No artifacts found for prefix {prefix}")
+
         deleted = 0
+        errors: list[dict] = []
+        names: list[str] = [b.name for b in blobs]
         for blob in blobs:
             try:
                 blob.delete()
                 deleted += 1
             except Exception as e:
                 logging.warning(f"Failed to delete blob {blob.name}: {e}")
+                errors.append({"name": blob.name, "error": str(e)})
 
-        return {"ok": True, "deleted": deleted, "prefix": prefix}
+        if deleted == 0 and errors:
+            raise HTTPException(500, f"Failed to delete any artifacts under {prefix}: {errors[:3]}")
+
+        return {"ok": True, "deleted": deleted, "failed": len(errors), "items": names, "prefix": prefix}
     except Exception as e:
         raise HTTPException(500, f"Failed to delete artifacts: {e}")
