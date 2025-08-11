@@ -50,6 +50,9 @@ class RemoteReq(BaseModel):
     target_yes : int = 12
     batch_size : int = 30
     num_bio_pages : int = 3
+    # New: allow per-job criteria override, either by preset id (for auditing) or raw text
+    criteria_preset_id: str | None = None
+    criteria_text: str | None = None
     api_url    : str = (
         "https://scrape-orchestrator-mhnsdh4esa-ew.a.run.app/run-scrape"
     )
@@ -197,7 +200,13 @@ async def remote_scrape(body: RemoteReq, request: Request):
                 "target_yes": body.target_yes,
                 "operation_id": epoch_id,
             }
+            # Attach criteria selection onto meta for transparency (no backend global changes)
+            if body.criteria_preset_id is not None:
+                running_meta["criteria_preset_id"] = body.criteria_preset_id
+            if body.criteria_text is not None:
+                running_meta["criteria_text"] = body.criteria_text
             meta_blob.upload_from_string(json.dumps(running_meta), content_type="application/json")
+            print(f"🔧 [DEBUG] remote_scrape meta: preset_id={running_meta.get('criteria_preset_id')} text_len={len(running_meta.get('criteria_text','') or '')}")
         except Exception as _e:
             # Non-fatal; continue
             pass
@@ -210,6 +219,8 @@ async def remote_scrape(body: RemoteReq, request: Request):
             batch_size    = body.batch_size,
             num_bio_pages = body.num_bio_pages,
             exec_id       = epoch_id,
+            criteria_preset_id = body.criteria_preset_id,
+            criteria_text = body.criteria_text,
         )
 
         # -------------------- response handling --------------------

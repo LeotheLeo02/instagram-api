@@ -28,6 +28,8 @@ async def run_remote_scrape(
     batch_size: int = 30,
     num_bio_pages: int = 3,
     exec_id: str | None = None,
+    criteria_preset_id: str | None = None,
+    criteria_text: str | None = None,
 ) -> Dict:
     """
     Invoke the /run-scrape endpoint, passing a gs:// cookie-state URI.
@@ -41,8 +43,14 @@ async def run_remote_scrape(
         "batch_size": batch_size,
         "state_gcs_uri": state_gcs_uri,
         "num_bio_pages": num_bio_pages,
-        "exec_id": exec_id
+        "exec_id": exec_id,
     }
+
+    # Optional per-job criteria selection
+    if criteria_preset_id is not None:
+        payload["criteria_preset_id"] = criteria_preset_id
+    if criteria_text is not None:
+        payload["criteria_text"] = criteria_text
 
     timeout = httpx.Timeout(900.0, connect=60.0, read=900.0,
                             write=60.0, pool=60.0)
