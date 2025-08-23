@@ -48,8 +48,8 @@ class RegisterStateRequest(BaseModel):
 class RemoteReq(BaseModel):
     target     : str = Field(..., example="utmartin")
     target_yes : int = 12
-    batch_size : int = 30
-    num_bio_pages : int = 3
+    batch_size : int = 40
+    num_bio_pages : int = 4
     # New: allow per-job criteria override, either by preset id (for auditing) or raw text
     criteria_preset_id: str | None = None
     criteria_text: str | None = None
