@@ -122,14 +122,21 @@ async def login_status(request: Request):
         if not json_blobs:
             return {"status": "none", "ok": False}
 
-        # Find the most recent valid blob in one pass
-        best_blob = None
+        # Find the most recent blobs in one pass
+        best_blob = None  # updated within FRESH_SECONDS
+        newest_blob = None  # newest overall
         old_blobs = []
 
         for blob in json_blobs:
+            # Track newest overall
+            if newest_blob is None or blob.updated > newest_blob.updated:
+                newest_blob = blob
+
+            # Fresh (under FRESH_SECONDS)
             if blob.updated > fresh_threshold:
                 if best_blob is None or blob.updated > best_blob.updated:
                     best_blob = blob
+            # Older than cleanup threshold (30d) -> schedule cleanup
             elif blob.updated < cleanup_threshold:
                 old_blobs.append(blob)
 
@@ -138,13 +145,21 @@ async def login_status(request: Request):
             import asyncio
             asyncio.create_task(_cleanup_old_files(old_blobs))
 
-        # Return result immediately if found
+        # Return result immediately if fresh (< FRESH_SECONDS)
         if best_blob:
             gcs_uri = f"gs://{BUCKET_NAME}/{best_blob.name}"
             request.app.state.state_path = gcs_uri
             request.app.state.state_path_timestamp = best_blob.updated
             return {"status": "finished", "ok": True}
 
+        # If not fresh, but there is a state within the last 30 days, still treat as valid
+        if newest_blob and newest_blob.updated >= cleanup_threshold:
+            gcs_uri = f"gs://{BUCKET_NAME}/{newest_blob.name}"
+            request.app.state.state_path = gcs_uri
+            request.app.state.state_path_timestamp = newest_blob.updated
+            return {"status": "finished", "ok": True}
+
+        # Only return invalid if the newest is older than 30 days (or none exist)
         return {"status": "none", "ok": False}
 
     except Exception as e:
