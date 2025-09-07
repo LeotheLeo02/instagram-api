@@ -213,6 +213,7 @@ async def remote_scrape(body: RemoteReq, request: Request):
                 "status": "running",
                 "target": body.target,
                 "target_yes": body.target_yes,
+                "yes_count": 0,
                 "operation_id": epoch_id,
             }
             # Attach criteria selection onto meta for transparency (no backend global changes)
@@ -321,12 +322,33 @@ def _gcs_status_lookup(target: str, exec_id: str):
     # 2) If DONE not yet present → running
     done_blob = bucket.blob(prefix + "DONE")
     if not done_blob.exists(client):
+        # Try to enrich running status with current meta, if present
+        meta_blob = bucket.blob(prefix + "meta.json")
+        try:
+            if meta_blob.exists(client):
+                meta_text = meta_blob.download_as_text()
+                meta = json.loads(meta_text)
+                # Ensure status is running for consistency until DONE appears
+                meta["status"] = "running"
+                return meta
+        except Exception:
+            pass
         return {"status": "running"}
 
     # Results with small retry to handle GCS write propagation
     results_blob = bucket.blob(prefix + "results.json")
     if not results_blob.exists(client):
         # Not yet visible; report running to allow slack
+        # Try to include meta if available
+        try:
+            meta_blob = bucket.blob(prefix + "meta.json")
+            if meta_blob.exists(client):
+                meta_text = meta_blob.download_as_text()
+                meta = json.loads(meta_text)
+                meta["status"] = "running"
+                return meta
+        except Exception:
+            pass
         return {"status": "running"}
 
     last_exc = None
@@ -345,9 +367,27 @@ def _gcs_status_lookup(target: str, exec_id: str):
                 pass
     else:
         # All retries failed; treat as running to avoid transient 500s
+        try:
+            meta_blob = bucket.blob(prefix + "meta.json")
+            if meta_blob.exists(client):
+                meta_text = meta_blob.download_as_text()
+                meta = json.loads(meta_text)
+                meta["status"] = "running"
+                return meta
+        except Exception:
+            pass
         return {"status": "running"}
 
-    return {"status": "completed", "results": results}
+    # Include summary from meta if available
+    try:
+        meta_blob = bucket.blob(prefix + "meta.json")
+        meta = {}
+        if meta_blob.exists(client):
+            meta_text = meta_blob.download_as_text()
+            meta = json.loads(meta_text)
+    except Exception:
+        meta = {}
+    return {"status": "completed", "results": results, **({k: v for k, v in meta.items() if k not in {"status", "results"}})}
 
 JOB_NAME = "scrape-job"             # << change if your job has another name
 
