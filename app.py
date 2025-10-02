@@ -16,6 +16,8 @@ from google.cloud import storage
 import datetime
 import os
 import logging
+import sys
+import httpx
 
 from pydantic     import BaseModel, Field
 
@@ -258,7 +260,67 @@ async def remote_scrape(body: RemoteReq, request: Request):
                      "results": results},
         )
 
+    except HTTPException:
+        raise
+    except httpx.HTTPStatusError as e:
+        resp = e.response
+        status_code = resp.status_code if resp is not None else 500
+        request_url = str(resp.request.url) if resp is not None and resp.request else "<unknown>"
+        print(
+            f"[remote-scrape] HTTPStatusError {status_code} for {request_url}",
+            file=sys.stderr,
+            flush=True,
+        )
+        response_json = None
+        response_text = None
+        if resp is not None:
+            try:
+                response_json = resp.json()
+                print(
+                    f"[remote-scrape] response_json snippet: {json.dumps(response_json)[:600]}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            except Exception:
+                text_payload = (resp.text or "").strip()
+                if text_payload:
+                    response_text = text_payload[:1000]
+                    print(
+                        f"[remote-scrape] response_text snippet: {response_text}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+        detail: dict[str, object] = {
+            "message": "Remote orchestrator returned an error",
+            "status_code": status_code,
+            "url": request_url,
+        }
+        if response_json is not None:
+            detail["response_json"] = response_json
+        elif response_text:
+            detail["response_text"] = response_text
+        raise HTTPException(status_code=status_code, detail=detail)
+    except httpx.RequestError as e:
+        request_url = str(e.request.url) if getattr(e, "request", None) else "<unknown>"
+        print(
+            f"[remote-scrape] RequestError for {request_url}: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "message": "Failed to reach remote orchestrator",
+                "url": request_url,
+                "error": str(e),
+            },
+        ) from e
     except Exception as e:
+        print(
+            f"[remote-scrape] Unexpected error: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
         raise HTTPException(500, str(e))
 
 
