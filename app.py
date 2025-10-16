@@ -260,7 +260,12 @@ async def remote_scrape(body: RemoteReq, request: Request):
                      "results": results},
         )
 
-    except HTTPException:
+    except HTTPException as e:
+        print(
+            f"[remote-scrape] HTTPException {e.status_code}: {e.detail}",
+            file=sys.stderr,
+            flush=True,
+        )
         raise
     except httpx.HTTPStatusError as e:
         resp = e.response
